@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
 
 	"github.com/oracle/oci-go-sdk/v65/common"
 	"github.com/oracle/oci-go-sdk/v65/core"
@@ -11,14 +12,19 @@ import (
 
 func main() {
 	if len(os.Args) != 5 {
-		fmt.Println("Usage: go run main.go <compartment_ocid> <subnet_to_find> <subnet_to_add> <rule_description>")
+		fmt.Println("Usage: go run main.go <compartment_ocid> <CIDR_to_find> <CIDR_to_add> <rule_description>")
 		os.Exit(1)
 	}
 
 	compartmentOCID := os.Args[1]
-	subnetToFind := os.Args[2]
-	subnetToAdd := os.Args[3]
-	ruleDescription := os.Args[4]
+	CidrToFind := os.Args[2]
+	CidrToAdd := os.Args[3]
+	//	ruleDescription := os.Args[4]
+
+	fmt.Println(compartmentOCID)
+	fmt.Println(CidrToFind)
+	fmt.Println(CidrToAdd)
+	//	fmt.Println(ruleDescription)
 
 	configProvider := common.DefaultConfigProvider()
 	client, err := core.NewVirtualNetworkClientWithConfigurationProvider(configProvider)
@@ -40,54 +46,68 @@ func main() {
 	}
 
 	for _, routeTable := range listRouteTablesResponse.Items {
-		updateRouteTable := false
-		var targetDrg *string
-
+		foundRoutes := []core.RouteRule{}
 		for _, route := range routeTable.RouteRules {
-			if *route.Destination == subnetToFind {
-				updateRouteTable = true
-				targetDrg = route.NetworkEntityId
-				break
+			if *route.Destination == CidrToFind {
+				foundRoutes = append(foundRoutes, route)
 			}
 		}
 
-		if updateRouteTable {
-			found := false
+		fmt.Println("foundRoutes:")
+		fmt.Println(foundRoutes)
+
+		for i := range foundRoutes {
+			foundRoutes[i].Destination = common.String(CidrToAdd)
+		}
+
+		fmt.Println("Rewriting CIDR in foundRoutes:")
+		fmt.Println(foundRoutes)
+
+		// Check for duplicate routes and remove them from foundRoutes
+		for i := len(foundRoutes) - 1; i >= 0; i-- {
 			for _, route := range routeTable.RouteRules {
-				if *route.Destination == subnetToAdd {
-					found = true
+				if *foundRoutes[i].Destination == *route.Destination {
+					foundRoutes = append(foundRoutes[:i], foundRoutes[i+1:]...)
 					break
 				}
 			}
+		}
 
-			if !found {
-				updateRouteTableDetails := core.UpdateRouteTableDetails{
-					RouteRules: []core.RouteRule{
-						{
-							Destination:     common.String(subnetToAdd),
-							NetworkEntityId: targetDrg,
-							Description:     common.String(ruleDescription),
-						},
-					},
-				}
-				updateRouteTableRequest := core.UpdateRouteTableRequest{
-					RtId:                    routeTable.Id,
-					UpdateRouteTableDetails: updateRouteTableDetails,
-				}
-				_, err := client.UpdateRouteTable(ctx, updateRouteTableRequest)
-				if err != nil {
-					fmt.Printf("Error updating route table %s: %v\n", *routeTable.Id, err)
-				} else {
-					fmt.Printf("Updated route table %s\n", *routeTable.Id)
-				}
+		fmt.Println("Removed duplicate routes from foundRoutes:")
+		fmt.Println(foundRoutes)
+
+		// Update the route table with the new routes
+		if len(foundRoutes) > 0 {
+			updateRouteTableRequest := core.UpdateRouteTableRequest{
+				RtId: routeTable.Id,
+				UpdateRouteTableDetails: core.UpdateRouteTableDetails{
+					RouteRules: append(routeTable.RouteRules, foundRoutes...),
+				},
 			}
+
+			_, err := client.UpdateRouteTable(ctx, updateRouteTableRequest)
+			if err != nil {
+				fmt.Printf("Error updating route table: %v\n", err)
+				continue
+			}
+
+			fmt.Printf("Successfully updated route table: %s\n", *routeTable.Id)
 		}
 	}
+
+	// *
+	// *
+	// *
+	// * Security Listts
+	// *
+	// *
+	// *
 
 	// Get a list of all security lists
 	listSecurityListsRequest := core.ListSecurityListsRequest{
 		CompartmentId: common.String(compartmentOCID),
 	}
+
 	listSecurityListsResponse, err := client.ListSecurityLists(ctx, listSecurityListsRequest)
 	if err != nil {
 		fmt.Printf("Error listing security lists: %v\n", err)
@@ -95,42 +115,53 @@ func main() {
 	}
 
 	for _, securityList := range listSecurityListsResponse.Items {
-		updateSecurityList := false
+		foundRules := []core.IngressSecurityRule{}
 
-		for _, ingressRule := range securityList.IngressSecurityRules {
-			if ingressRule.Source == common.String(subnetToFind) {
-				updateSecurityList = true
-				break
+		for _, rule := range securityList.IngressSecurityRules {
+			if *rule.Source == CidrToFind {
+				foundRules = append(foundRules, rule)
 			}
 		}
 
-		if updateSecurityList {
-			found := false
-			for _, ingressRule := range securityList.IngressSecurityRules {
-				if ingressRule.Source == common.String(subnetToAdd) {
-					found = true
+		fmt.Println("Found ingress rules:")
+		fmt.Println(foundRules)
+
+		for i := range foundRules {
+			foundRules[i].Source = common.String(CidrToAdd)
+		}
+
+		fmt.Println("Rewriting source CIDRs in found ingress rules:")
+		fmt.Println(foundRules)
+
+		// Check for duplicate rules and remove them from foundRules
+		for i := len(foundRules) - 1; i >= 0; i-- {
+			for _, rule := range securityList.IngressSecurityRules {
+				if reflect.DeepEqual(foundRules[i], rule) {
+					foundRules = append(foundRules[:i], foundRules[i+1:]...)
 					break
 				}
 			}
+		}
 
-			if !found {
-				updateSecurityListDetails := core.UpdateSecurityListDetails{
-					IngressSecurityRules: append(securityList.IngressSecurityRules, core.IngressSecurityRule{
-						Source:      common.String(subnetToAdd),
-						Description: common.String(ruleDescription),
-					}),
-				}
-				updateSecurityListRequest := core.UpdateSecurityListRequest{
-					SecurityListId:            securityList.Id,
-					UpdateSecurityListDetails: updateSecurityListDetails,
-				}
-				_, err := client.UpdateSecurityList(ctx, updateSecurityListRequest)
-				if err != nil {
-					fmt.Printf("Error updating security list %s: %v\n", *securityList.Id, err)
-				} else {
-					fmt.Printf("Updated security list %s\n", *securityList.Id)
-				}
+		fmt.Println("Removed duplicate ingress rules from foundRules:")
+		fmt.Println(foundRules)
+
+		// Update the security list with the new ingress rules
+		if len(foundRules) > 0 {
+			updateSecurityListRequest := core.UpdateSecurityListRequest{
+				SecurityListId: securityList.Id,
+				UpdateSecurityListDetails: core.UpdateSecurityListDetails{
+					IngressSecurityRules: append(securityList.IngressSecurityRules, foundRules...),
+				},
 			}
+
+			_, err := client.UpdateSecurityList(ctx, updateSecurityListRequest)
+			if err != nil {
+				fmt.Printf("Error updating security list: %v\n", err)
+				continue
+			}
+
+			fmt.Printf("Successfully updated security list: %s\n", *securityList.Id)
 		}
 	}
 }
