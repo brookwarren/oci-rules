@@ -8,6 +8,7 @@ import (
 
 	"github.com/oracle/oci-go-sdk/v65/common"
 	"github.com/oracle/oci-go-sdk/v65/core"
+	"github.com/oracle/oci-go-sdk/v65/identity"
 )
 
 func main() {
@@ -33,11 +34,43 @@ func main() {
 		return
 	}
 
+	identityClient, err := identity.NewIdentityClientWithConfigurationProvider(configProvider)
+	if err != nil {
+		fmt.Printf("Error creating IdentityClient: %v\n", err)
+		return
+	}
+
 	ctx := context.Background()
 
+	// Recursively process each compartment and its sub-compartments
+	processCompartment(ctx, client, identityClient, compartmentOCID, CidrToFind, CidrToAdd)
+}
+
+func processCompartment(ctx context.Context, client core.VirtualNetworkClient, identityClient identity.IdentityClient, compartmentID, CidrToFind, CidrToAdd string) {
+	// Process route tables and security lists for the current compartment
+	processRouteTables(ctx, client, compartmentID, CidrToFind, CidrToAdd)
+	processSecurityLists(ctx, client, compartmentID, CidrToFind, CidrToAdd)
+
+	// Retrieve the list of sub-compartments
+	listCompartmentsRequest := identity.ListCompartmentsRequest{
+		CompartmentId: common.String(compartmentID),
+	}
+	listCompartmentsResponse, err := identityClient.ListCompartments(ctx, listCompartmentsRequest)
+	if err != nil {
+		fmt.Printf("Error listing compartments: %v\n", err)
+		return
+	}
+
+	// Recursively process each sub-compartment
+	for _, subCompartment := range listCompartmentsResponse.Items {
+		processCompartment(ctx, client, identityClient, *subCompartment.Id, CidrToFind, CidrToAdd)
+	}
+}
+
+func processRouteTables(ctx context.Context, client core.VirtualNetworkClient, compartmentID, CidrToFind, CidrToAdd string) {
 	// Get a list of all route tables
 	listRouteTablesRequest := core.ListRouteTablesRequest{
-		CompartmentId: common.String(compartmentOCID),
+		CompartmentId: common.String(compartmentID),
 	}
 	listRouteTablesResponse, err := client.ListRouteTables(ctx, listRouteTablesRequest)
 	if err != nil {
@@ -94,18 +127,12 @@ func main() {
 			fmt.Printf("Successfully updated route table: %s\n", *routeTable.Id)
 		}
 	}
+}
 
-	// *
-	// *
-	// *
-	// * Security Listts
-	// *
-	// *
-	// *
-
+func processSecurityLists(ctx context.Context, client core.VirtualNetworkClient, compartmentID, CidrToFind, CidrToAdd string) {
 	// Get a list of all security lists
 	listSecurityListsRequest := core.ListSecurityListsRequest{
-		CompartmentId: common.String(compartmentOCID),
+		CompartmentId: common.String(compartmentID),
 	}
 
 	listSecurityListsResponse, err := client.ListSecurityLists(ctx, listSecurityListsRequest)
